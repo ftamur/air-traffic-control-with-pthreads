@@ -18,7 +18,6 @@ typedef struct {
 typedef struct {
    int s;
    int emergency;
-   int initial;
    time_t arrival_time;
    pthread_mutex_t lock;
    pthread_cond_t cond;
@@ -52,6 +51,7 @@ typedef struct {
     int size;
     int front;
     int rear;
+    char *name;
     plane **items;
 
 } queue;
@@ -107,7 +107,7 @@ plane *front(queue *queue_);
 void enqueue(queue *queue_, plane *plane_);
 
 /* creating queue and initialization */
-queue * create_queue(int size);
+queue * create_queue(int size, char *name);
 
 /* plane */
 
@@ -153,9 +153,9 @@ int main(int argc, char *argv[]) {
     pthread_attr_init(&attr);
 
     /* initialization of landing/departing queues */
-    landing = create_queue(s+2);
-    departing = create_queue(s+2);
-    emergency = create_queue(s+2);
+    landing = create_queue(s+2, "landing");
+    departing = create_queue(s+2, "departing");
+    emergency = create_queue(s+2, "emergency");
 
     /* set the timers */
     start_time = time(NULL);
@@ -174,18 +174,11 @@ int main(int argc, char *argv[]) {
     /* data for each plane */
     planes_data = malloc(sizeof(plane_data));
 
-    planes_data->initial = 0;
     planes_data->s = s;
     planes_data->emergency = 0;
 
-    plane_data *init_plane_data = malloc(sizeof(plane_data));
-
-    init_plane_data->initial = 1;
-    init_plane_data->s = s;
-    init_plane_data->emergency = 0;
-
     pthread_create(&tower, &attr, airport_tower, (void *) data_tower); 
-    pthread_create(&plane_init_land, &attr, land, (void *) init_plane_data);
+    pthread_create(&plane_init_land, &attr, land, (void *) planes_data);
     pthread_create(&plane_init_depart, &attr, depart, (void *) planes_data);
     
     int plane = 0;
@@ -238,9 +231,11 @@ void* land(void *arg) {
     if (front(landing) == landing_plane)
         pthread_cond_signal(&tower_cond);
 
+
     pthread_cond_wait(&(landing_plane->cond), &(landing_plane->lock));
 
     printf("Landed -> %d.\n", landing_plane->id);
+
     pthread_mutex_unlock(&tower_mutex);
     pthread_mutex_destroy(&(landing_plane->lock));
     pthread_cond_destroy(&(landing_plane->cond));
@@ -263,18 +258,13 @@ void *depart(void *arg) {
     pthread_mutex_init(&(departing_plane->lock), NULL);
     pthread_cond_init(&(departing_plane->cond), NULL);
 
-    // puts("Waiting for departing...");
     pthread_mutex_lock(&tower_mutex);
-    // puts("Departing got the lock.");
-
-    // pthread_mutex_lock(&(departing_plane->lock));
-
+    
     enqueue(departing, departing_plane);
 
     if (front(departing) == departing_plane)
         pthread_cond_signal(&tower_cond);
 
-    // puts("Departing is waiting for cond...");
     pthread_cond_wait(&(departing_plane->cond), &(departing_plane->lock));
     printf("Departed -> %d.\n", departing_plane->id);
     
@@ -365,7 +355,7 @@ int read_command_line(int argc, char *argv[], float *p, int *s) {
 /* queue functions */
 
 /* creating queue and initialization */
-queue * create_queue(int size) {
+queue * create_queue(int size, char *name) {
 
     queue *queue_;
 
@@ -375,6 +365,7 @@ queue * create_queue(int size) {
     queue_->size = size;
     queue_->front = -1;
     queue_->rear = -1;
+    queue_->name = name;
     queue_->items = malloc(sizeof(plane) * size);
 
     // puts("queue initialized.");
@@ -434,15 +425,16 @@ void disqueue(queue *queue_) {
         return;
     }
 
+    printf("%s -> ", queue_->name);
     for (int i = queue_->front; i <= queue_->rear; i++)
-        printf("-> %d ", queue_->items[i]->id);
+        printf("%d ", queue_->items[i]->id);
 
     puts("");
 
 }
 
 void print_time(struct tm tm, int simulation) {
-    printf("Time: %02d:%02d:%02d - %d seconds in simulation\n", simulation, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    printf("Time: %02d:%02d:%02d - %d seconds in simulation\n", tm.tm_hour, tm.tm_min, tm.tm_sec, simulation);
 }
 
 
