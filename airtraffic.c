@@ -32,6 +32,9 @@ typedef struct{
     /* respond time */
     int respond_time;
 
+    /* emergency */
+    int emergency;
+
     /* condition variable */
     pthread_cond_t cond;
 
@@ -44,7 +47,6 @@ typedef struct{
 /* passing multiple arguments to thread  */
 typedef struct {
    int s;
-   int emergency;
    plane *plane_;
 } thread_plane_data;
 
@@ -65,6 +67,7 @@ typedef struct {
 
 queue *landing = NULL;
 queue *departing = NULL;
+queue *emergency = NULL;
 
 /* time_t */
 
@@ -95,6 +98,7 @@ pthread_cond_t tower_cond;
 /* locks for queues */
 pthread_mutex_t landing_lock;
 pthread_mutex_t departing_lock;
+pthread_mutex_t emergency_lock;
 
 /* planes data */
 pthread_mutex_t planes_array_lock;
@@ -155,11 +159,7 @@ int main(int argc, char *argv[]) {
     if(!read_command_line(argc, argv, &p, &s, &n))
         return 0;
 
-    // p = 0;
-    // s = 10;
-    // n = 2;
-
-    /* set seed to 42 debugging purposes. */
+    /* set seed for debugging purposes. */
     srand(1588004448);
 
     /* plane threads */
@@ -172,6 +172,7 @@ int main(int argc, char *argv[]) {
     for (int i=0; i<s+2; i++){
         plane *plane_ = malloc(sizeof(plane));
         plane_->id = i;
+        plane_->emergency = 0;
         planes_array[i] = plane_;
     }
     
@@ -184,6 +185,7 @@ int main(int argc, char *argv[]) {
     /* initial queue mutexes */
     pthread_mutex_init(&landing_lock, NULL);
     pthread_mutex_init(&departing_lock, NULL);
+    pthread_mutex_init(&emergency_lock, NULL);
 
     /* initialization planes_array mutexes */
     pthread_mutex_init(&planes_array_lock, NULL);
@@ -191,6 +193,7 @@ int main(int argc, char *argv[]) {
     /* initialization of landing/departing queues */
     landing = create_queue(s+2, "Air:");
     departing = create_queue(s+2, "Ground:");
+    emergency = create_queue(s / n, "Emergency:");
 
     /* set the timers */
     start_time = time(NULL);
@@ -216,7 +219,6 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i<s+2; i++) {
         planes_data[i] = malloc(sizeof(thread_plane_data));
         planes_data[i]->s = s;
-        planes_data[i]->emergency = 0;
         planes_data[i]->plane_ = malloc(sizeof(plane));
     }
 
@@ -236,17 +238,19 @@ int main(int argc, char *argv[]) {
     
     int plane = 0;
     planes_index = 2;
+    int simulation_time;
 
     while (current_time < start_time + s) {
+        simulation_time = ((int) current_time -  (int) start_time);
         planes_data[planes_index]->plane_ = planes_array[planes_index];
-        planes_data[planes_index]->plane_->request_time = ((int) current_time -  (int) start_time);
+        planes_data[planes_index]->plane_->request_time = simulation_time;
         planes_data[planes_index]->plane_->respond_time = -1;
         planes_data[planes_index]->plane_->arrival_time = current_time;
 
-        if ((current_time - start_time) == e_t){
+        if (simulation_time % e_t == 0 && simulation_time != 0){
             strcpy(planes_data[planes_index]->plane_->status, "L(E)");
-            planes_data[planes_index]->emergency = 1;
-            pthread_create(&planes[plane], &attr, land, (void *) planes_data);
+            planes_data[planes_index]->plane_->emergency = 1;
+            pthread_create(&planes[plane], &attr, land, (void *) planes_data[planes_index]);
 
         }else {
         
@@ -268,13 +272,13 @@ int main(int argc, char *argv[]) {
 
         pthread_sleep(t);
         current_time = time(NULL);
+        simulation_time = ((int) current_time -  (int) start_time);
 
         disqueue(landing, &landing_lock);
         disqueue(departing, &departing_lock);
 
-        if ((current_time - start_time) % n == 0 && (current_time - start_time) != 0)
+        if (simulation_time % n == 0 && simulation_time != 0)
             planes_log(planes_array, planes_index, (current_time - start_time));
-
 
     }
 
@@ -308,14 +312,14 @@ void* land(void *arg) {
     pthread_mutex_init(&(landing_plane->lock), NULL); 
     pthread_cond_init(&(landing_plane->cond), NULL);
 
-    if (data_->emergency)
-        enquenue_front(landing, landing_plane, &landing_lock);
+    // enquenue_front(landing, landing_plane, &landing_lock);
+
+    if (landing_plane->emergency)
+        enqueue(emergency, landing_plane, &emergency_lock);
     else
         enqueue(landing, landing_plane, &landing_lock);
 
     pthread_cond_wait(&(landing_plane->cond), &(landing_plane->lock));
-    landing_plane->respond_time = ((int) time(NULL) - (int) start_time);
-
     pthread_mutex_destroy(&(landing_plane->lock));
     pthread_cond_destroy(&(landing_plane->cond));
     pthread_exit(NULL);
@@ -335,7 +339,6 @@ void *depart(void *arg) {
     enqueue(departing, departing_plane, &departing_lock);
 
     pthread_cond_wait(&(departing_plane->cond), &(departing_plane->lock));
-    departing_plane->respond_time = ((int) time(NULL) - (int) start_time);
 
     pthread_mutex_unlock(&(departing_plane->lock));
     pthread_mutex_destroy(&(departing_plane->lock));
@@ -351,30 +354,42 @@ void *airport_tower(void *arg) {
 
     time_t start_t = time(NULL);
     time_t current_t = time(NULL);
-
-    struct tm tm_current = *localtime(&current_t);
-
+   
     while (current_t < (start_t + data_->s)) {
 
-        if (landing->capacity > 0 && departing->capacity < 5) {
-            plane *landing_plane = front(landing, &landing_lock);
+        if (emergency->capacity > 0){
+            plane *emergency_plane = front(emergency, &emergency_lock);
                        
-            dequeue(landing, &landing_lock);
+            dequeue(emergency, &emergency_lock);
             pthread_sleep(2*t);
+            emergency_plane->respond_time = ((int) time(NULL) - (int) start_time);
 
-            pthread_cond_signal(&(landing_plane->cond));
-    
-        }else if (departing->capacity > 0){
-            plane *departing_plane = front(departing, &departing_lock);
-
-            dequeue(departing, &departing_lock);
-            pthread_sleep(2*t);
-        
-            pthread_cond_signal(&(departing_plane->cond));
-        }
+            pthread_cond_signal(&(emergency_plane->cond));
             
+        }else{
+
+            if (landing->capacity > 0 && (landing->capacity > departing->capacity)) {
+                plane *landing_plane = front(landing, &landing_lock);
+                        
+                dequeue(landing, &landing_lock);
+                pthread_sleep(2*t);
+                landing_plane->respond_time = ((int) time(NULL) - (int) start_time);
+
+                pthread_cond_signal(&(landing_plane->cond));
+        
+            }else if (departing->capacity > 5){
+                plane *departing_plane = front(departing, &departing_lock);
+
+                dequeue(departing, &departing_lock);
+                pthread_sleep(2*t);
+                departing_plane->respond_time = ((int) time(NULL) - (int) start_time);
+
+                pthread_cond_signal(&(departing_plane->cond));
+            }
+
+        }
+        
         current_t = time(NULL);
-        tm_current = *localtime(&current_t);
         
     }
 
@@ -433,7 +448,10 @@ queue * create_queue(int size, char *name) {
     queue_->front = -1;
     queue_->rear = -1;
     queue_->name = name;
-    queue_->items = malloc(sizeof(plane) * size);
+    queue_->items = malloc(sizeof(plane*) * size);
+
+    for (int i=0; i<size; i++)
+        queue_->items[i] = malloc(sizeof(plane));
 
     return queue_;
 
@@ -493,7 +511,6 @@ void dequeue(queue *queue_, pthread_mutex_t *lock) {
         return;
     }
         
-
     queue_->front++;
 
     if (queue_->front > queue_->rear) {
@@ -516,7 +533,6 @@ plane * front(queue *queue_, pthread_mutex_t *lock) {
         return NULL;
     }
         
-
     plane *front_ = queue_->items[queue_->front];
 
     pthread_mutex_unlock(lock);
@@ -538,7 +554,7 @@ void disqueue(queue *queue_, pthread_mutex_t *lock) {
         return;
     }
 
-    printf("%s ", queue_->name);
+    printf("%-7s ", queue_->name);
     for (int i = queue_->front; i <= queue_->rear; i++)
         printf("%d ", queue_->items[i]->id);
 
