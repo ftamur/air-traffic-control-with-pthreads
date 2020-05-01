@@ -7,12 +7,11 @@
 
 /* declarations and data types */
 
+/* sleep simulation for t seconds */
 #define t 1
-#define e_t 40
 
-typedef struct {
-    int s;
-} tower_data;
+/* emergency planes comes every e_t seconds */
+#define e_t 40
 
 /* plane struct */
 typedef struct{
@@ -20,7 +19,7 @@ typedef struct{
     /* plane id to add/remove queue */
     int id;
 
-    /* plane status */
+    /* plane status L, D or E(L) */
     char status[5];
 
     /* arrival time */
@@ -43,12 +42,15 @@ typedef struct{
 
 } plane;
 
-
-/* passing multiple arguments to thread  */
+/* passing multiple arguments to thread via struct */
 typedef struct {
    int s;
    plane *plane_;
 } thread_plane_data;
+
+typedef struct {
+    int s;
+} tower_data;
 
 /* queue struct */
 typedef struct {
@@ -69,7 +71,7 @@ queue *landing = NULL;
 queue *departing = NULL;
 queue *emergency = NULL;
 
-/* time_t */
+/* time_t for simulation start and current time*/
 
 time_t start_time;
 time_t current_time;
@@ -80,10 +82,10 @@ int s;
 /* probability of land/depart */
 float p; 
 
-/* log time  */
+/* simulation log time  */
 int n;
 
-/* thread for tower */
+/* thread for tower and initial planes */
 pthread_t tower;
 pthread_t plane_init_land;
 pthread_t plane_init_depart;
@@ -91,7 +93,7 @@ pthread_t plane_init_depart;
 /* creating threads attrs*/
 pthread_attr_t attr;
 
-/* mutexes and cond */
+/* mutexes and cond for tower */
 pthread_mutex_t tower_mutex;
 pthread_cond_t tower_cond;
 
@@ -100,7 +102,7 @@ pthread_mutex_t landing_lock;
 pthread_mutex_t departing_lock;
 pthread_mutex_t emergency_lock;
 
-/* planes data */
+/* lock for all planes in the simulation. */
 pthread_mutex_t planes_array_lock;
 
 /*********************/
@@ -140,6 +142,7 @@ void* airport_tower(void *arg);
 
 /* utils */
 
+/* different text colors for terminal */
 void red();
 void yellow();
 void magenta();
@@ -159,16 +162,27 @@ int main(int argc, char *argv[]) {
     if(!read_command_line(argc, argv, &p, &s, &n))
         return 0;
 
+    /* debug values */
+    // s = 10;
+    // p = 1;
+    // n = 2;
+
     /* set seed for debugging purposes. */
     srand(1588004448);
 
     /* plane threads */
+    /* Here, my assumption is there can be max s+2 planes in the simulation
+       because each time main thread will sleep 1 seconds.
+       Because init_land and init_depart planes are defined separately 
+       there will be s plane thread.
+     */
     pthread_t planes[s];
 
-    /* planes array */
+    /* planes array keeps all planes in the simulation */
     plane *planes_array[s+2];
     int planes_index = 0;
 
+    /* allocate memory for plane also set id and emergency for all planes */
     for (int i=0; i<s+2; i++){
         plane *plane_ = malloc(sizeof(plane));
         plane_->id = i;
@@ -176,13 +190,14 @@ int main(int argc, char *argv[]) {
         planes_array[i] = plane_;
     }
     
-    /* initial tower mutex and condition variable */
+    /* initialization tower mutex and condition variable */
     pthread_mutex_init(&tower_mutex, NULL);
     pthread_cond_init(&tower_cond, NULL);
 
+    /* initialization thread attr */
     pthread_attr_init(&attr);
 
-    /* initial queue mutexes */
+    /* initialization queue mutexes */
     pthread_mutex_init(&landing_lock, NULL);
     pthread_mutex_init(&departing_lock, NULL);
     pthread_mutex_init(&emergency_lock, NULL);
@@ -193,12 +208,15 @@ int main(int argc, char *argv[]) {
     /* initialization of landing/departing queues */
     landing = create_queue(s+2, "Air:");
     departing = create_queue(s+2, "Ground:");
-    emergency = create_queue(s / n, "Emergency:");
+
+    /* There can be max s/e_t emergency planes */
+    emergency = create_queue(s/e_t, "Emergency:");
 
     /* set the timers */
     start_time = time(NULL);
     current_time = time(NULL);
 
+    /* formatted time for start time. */
     struct tm tm_start = *localtime(&start_time);
 
     yellow();
@@ -206,49 +224,65 @@ int main(int argc, char *argv[]) {
     printf("Running Simulation... s: %d - p: %f - n: %d-----------\n", s, p, n);
     reset();
 
-    /* data for tower */
+    /* passing data for tower thread */
     tower_data *data_tower = malloc(sizeof(data_tower));
 
     data_tower->s = s;
 
+    /* initialization of tower thread */
     pthread_create(&tower, &attr, airport_tower, (void *) data_tower);
 
     /* data for each plane */
     thread_plane_data **planes_data = malloc(sizeof(thread_plane_data*) * (s+2));
 
+    /* allocate memory and set planes for planes_data */
+    /* In my solution, I create planes and set their id and emergency
+       condition then I give planes to each plane thread with planes_data.
+    */
     for (int i = 0; i<s+2; i++) {
         planes_data[i] = malloc(sizeof(thread_plane_data));
         planes_data[i]->s = s;
         planes_data[i]->plane_ = malloc(sizeof(plane));
     }
 
+    /* setting plane_data for init_land plane */
     planes_data[0]->plane_ = planes_array[0];
     planes_data[0]->plane_->request_time = current_time - start_time;
     strcpy(planes_data[0]->plane_->status, "L");
     planes_data[0]->plane_->arrival_time = current_time;
     planes_data[0]->plane_->respond_time = -1;
+
+    /* initialization of init_land plane thread */
     pthread_create(&plane_init_land, &attr, land, (void *) planes_data[0]);
 
+    /* setting plane_data for init_depart plane */
     planes_data[1]->plane_ = planes_array[1];
     planes_data[1]->plane_->request_time = current_time - start_time;
     strcpy(planes_data[1]->plane_->status, "D");
     planes_data[1]->plane_->arrival_time = current_time;
     planes_data[1]->plane_->respond_time = -1;
+
+    /* initialization of init_depart plane thread */
     pthread_create(&plane_init_depart, &attr, depart, (void *) planes_data[1]);
     
+    /* plane is index for planes thread array. */
     int plane = 0;
+    /* planes_index is index for planes_data array */
     planes_index = 2;
+    
     int simulation_time;
 
     while (current_time < start_time + s) {
         simulation_time = ((int) current_time -  (int) start_time);
+
+        /* setting plane_data for next plane */
         planes_data[planes_index]->plane_ = planes_array[planes_index];
         planes_data[planes_index]->plane_->request_time = simulation_time;
         planes_data[planes_index]->plane_->respond_time = -1;
         planes_data[planes_index]->plane_->arrival_time = current_time;
 
         if (simulation_time % e_t == 0 && simulation_time != 0){
-            strcpy(planes_data[planes_index]->plane_->status, "L(E)");
+            strcpy(planes_data[planes_index]->plane_->status, "E(L)");
             planes_data[planes_index]->plane_->emergency = 1;
             pthread_create(&planes[plane], &attr, land, (void *) planes_data[planes_index]);
 
@@ -274,23 +308,33 @@ int main(int argc, char *argv[]) {
         current_time = time(NULL);
         simulation_time = ((int) current_time -  (int) start_time);
 
+        /* display each air and ground queues */
         disqueue(landing, &landing_lock);
         disqueue(departing, &departing_lock);
 
+        /* every nth second display log for all planes in the simulation. */
         if (simulation_time % n == 0 && simulation_time != 0)
             planes_log(planes_array, planes_index, (current_time - start_time));
 
     }
 
+    /* wait for tower thread */
     pthread_join(tower, NULL);
     pthread_attr_destroy(&attr);
 
+    /* kill all planes threads */
     for (int i=0; i<s; i++)
         pthread_cancel(planes[i]);
 
+    /* free allocated memory for planes_array */
     for (int i=0; i<s+2; i++)
         free(planes_array[i]);
 
+    /* free allocated memory for planes_data */
+    for (int i=0; i<s+2; i++) 
+        free(planes_data[i]);
+
+    free(planes_data);
     free(data_tower);
     return 0;
 }
@@ -302,7 +346,7 @@ float rand_p() {
     return (float) rand() / (float) RAND_MAX;
 }
 
-/* plane */
+/* plane functions */
 
 void* land(void *arg) { 
 
@@ -312,6 +356,7 @@ void* land(void *arg) {
     pthread_mutex_init(&(landing_plane->lock), NULL); 
     pthread_cond_init(&(landing_plane->cond), NULL);
 
+    /* another solution no need to emergency queue */
     // enquenue_front(landing, landing_plane, &landing_lock);
 
     if (landing_plane->emergency)
