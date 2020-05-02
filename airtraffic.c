@@ -87,8 +87,6 @@ int n;
 
 /* thread for tower and initial planes */
 pthread_t tower;
-pthread_t plane_init_land;
-pthread_t plane_init_depart;
 
 /* creating threads attrs*/
 pthread_attr_t attr;
@@ -168,22 +166,22 @@ int main(int argc, char *argv[]) {
     // n = 2;
 
     /* set seed for debugging purposes. */
-    srand(1588004448);
+    srand(42);
 
     /* plane threads */
-    /* Here, my assumption is there can be max s+2 planes in the simulation
+    /* Here, my assumption is there can be max 2*s+2 planes in the simulation
        because each time main thread will sleep 1 seconds.
        Because init_land and init_depart planes are defined separately 
        there will be s plane thread.
      */
-    pthread_t planes[s];
+    pthread_t planes[2*s+2];
 
     /* planes array keeps all planes in the simulation */
-    plane *planes_array[s+2];
+    plane *planes_array[2*s+2];
     int planes_index = 0;
 
     /* allocate memory for plane also set id and emergency for all planes */
-    for (int i=0; i<s+2; i++){
+    for (int i=0; i<2*s+2; i++){
         plane *plane_ = malloc(sizeof(plane));
         plane_->id = i;
         plane_->emergency = 0;
@@ -233,13 +231,13 @@ int main(int argc, char *argv[]) {
     pthread_create(&tower, &attr, airport_tower, (void *) data_tower);
 
     /* data for each plane */
-    thread_plane_data **planes_data = malloc(sizeof(thread_plane_data*) * (s+2));
+    thread_plane_data **planes_data = malloc(sizeof(thread_plane_data*) * (2*s+2));
 
     /* allocate memory and set planes for planes_data */
     /* In my solution, I create planes and set their id and emergency
        condition then I give planes to each plane thread with planes_data.
     */
-    for (int i = 0; i<s+2; i++) {
+    for (int i = 0; i<2*s+2; i++) {
         planes_data[i] = malloc(sizeof(thread_plane_data));
         planes_data[i]->s = s;
         planes_data[i]->plane_ = malloc(sizeof(plane));
@@ -253,7 +251,7 @@ int main(int argc, char *argv[]) {
     planes_data[0]->plane_->respond_time = -1;
 
     /* initialization of init_land plane thread */
-    pthread_create(&plane_init_land, &attr, land, (void *) planes_data[0]);
+    pthread_create(&planes[0], &attr, land, (void *) planes_data[0]);
 
     /* setting plane_data for init_depart plane */
     planes_data[1]->plane_ = planes_array[1];
@@ -263,11 +261,9 @@ int main(int argc, char *argv[]) {
     planes_data[1]->plane_->respond_time = -1;
 
     /* initialization of init_depart plane thread */
-    pthread_create(&plane_init_depart, &attr, depart, (void *) planes_data[1]);
+    pthread_create(&planes[1], &attr, depart, (void *) planes_data[1]);
     
-    /* plane is index for planes thread array. */
-    int plane = 0;
-    /* planes_index is index for planes_data array */
+    /* planes_index is index for thread array and planes_data array */
     planes_index = 2;
     
     int simulation_time;
@@ -275,30 +271,48 @@ int main(int argc, char *argv[]) {
     while (current_time < start_time + s) {
         simulation_time = ((int) current_time -  (int) start_time);
 
-        /* setting plane_data for next plane */
-        planes_data[planes_index]->plane_ = planes_array[planes_index];
-        planes_data[planes_index]->plane_->request_time = simulation_time;
-        planes_data[planes_index]->plane_->respond_time = -1;
-        planes_data[planes_index]->plane_->arrival_time = current_time;
-
+        /* emergency plane of landing plane with prob p */
         if (simulation_time % e_t == 0 && simulation_time != 0){
+
+            /* setting plane_data for next plane */
+            planes_data[planes_index]->plane_ = planes_array[planes_index];
+            planes_data[planes_index]->plane_->request_time = simulation_time;
+            planes_data[planes_index]->plane_->respond_time = -1;
+            planes_data[planes_index]->plane_->arrival_time = current_time;
             strcpy(planes_data[planes_index]->plane_->status, "E(L)");
             planes_data[planes_index]->plane_->emergency = 1;
-            pthread_create(&planes[plane], &attr, land, (void *) planes_data[planes_index]);
 
-        }else {
-        
-            if (rand_p() <= p){
-                strcpy(planes_data[planes_index]->plane_->status, "L");
-                pthread_create(&planes[plane], &attr, land, (void *) planes_data[planes_index]);
-            }else{
-                strcpy(planes_data[planes_index]->plane_->status, "D");
-                pthread_create(&planes[plane], &attr, depart, (void *) planes_data[planes_index]);
-            }
+            pthread_create(&planes[planes_index], &attr, land, (void *) planes_data[planes_index]);
+
+            planes_index++;
+
+        }else if (rand_p() <= p){
+
+            /* setting plane_data for next plane */
+            planes_data[planes_index]->plane_ = planes_array[planes_index];
+            planes_data[planes_index]->plane_->request_time = simulation_time;
+            planes_data[planes_index]->plane_->respond_time = -1;
+            planes_data[planes_index]->plane_->arrival_time = current_time;
+            strcpy(planes_data[planes_index]->plane_->status, "L");
+
+            pthread_create(&planes[planes_index], &attr, land, (void *) planes_data[planes_index]);
+
+            planes_index++;
         }
+            
+        /* departing plane with prob 1 - p */
+        if (rand_p() <= 1 - p){
 
-        plane++;
-        planes_index++;
+            /* setting plane_data for next plane */
+            planes_data[planes_index]->plane_ = planes_array[planes_index];
+            planes_data[planes_index]->plane_->request_time = simulation_time;
+            planes_data[planes_index]->plane_->respond_time = -1;
+            planes_data[planes_index]->plane_->arrival_time = current_time;
+            strcpy(planes_data[planes_index]->plane_->status, "D");
+            pthread_create(&planes[planes_index], &attr, depart, (void *) planes_data[planes_index]);
+            
+            planes_index++;
+        }
 
         red();
         printf("--------------------------------------Time:%d-------------------------------------\n", ((int) current_time -  (int) start_time));
@@ -322,16 +336,18 @@ int main(int argc, char *argv[]) {
     pthread_join(tower, NULL);
     pthread_attr_destroy(&attr);
 
+    printf("Total Plane Count: %d\n", planes_index-1);
+
     /* kill all planes threads */
-    for (int i=0; i<s; i++)
+    for (int i=0; i<2*s+2; i++)
         pthread_cancel(planes[i]);
 
     /* free allocated memory for planes_array */
-    for (int i=0; i<s+2; i++)
+    for (int i=0; i<2*s+2; i++)
         free(planes_array[i]);
 
     /* free allocated memory for planes_data */
-    for (int i=0; i<s+2; i++) 
+    for (int i=0; i<2*s+2; i++) 
         free(planes_data[i]);
 
     free(planes_data);
@@ -380,6 +396,8 @@ void *depart(void *arg) {
 
     pthread_mutex_init(&(departing_plane->lock), NULL);
     pthread_cond_init(&(departing_plane->cond), NULL);
+
+    pthread_mutex_lock(&(departing_plane->lock));
     
     enqueue(departing, departing_plane, &departing_lock);
 
