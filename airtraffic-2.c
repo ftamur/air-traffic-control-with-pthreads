@@ -140,6 +140,8 @@ void* airport_tower(void *arg);
 void red();
 void yellow();
 void magenta();
+void blue();
+void green();
 void reset ();
 
 /* reads command line arguments -s and -p */
@@ -630,13 +632,27 @@ void planes_log(plane *planes[], int size, int time) {
     printf("|%-15s|%-15s|%-15s|%-15s|%-15s|\n", "PlaneID", "Status", "Request-Time",
     "Runway-Time", "Turnaround-Time");
     printf("---------------------------------------------------------------------------------\n");
-    red();
     int i;
     for (i=0; i < size; i++){
-        if (planes[i]->respond_time != -1)
+        if (planes[i]->respond_time != -1){
+
+            if (!strcmp(planes[i]->status, "L"))
+                green();
+            else if (!strcmp(planes[i]->status, "D"))
+                blue();
+            else
+                red();
+
             printf("|%-15d|%-15s|%-15d|%-15d|%-15d|\n", planes[i]->id, planes[i]->status, planes[i]->request_time, planes[i]->respond_time, planes[i]->respond_time - planes[i]->request_time);
-        else
+
+            reset();
+
+        }else{
+            magenta();
             printf("|%-15d|%-15s|%-15d|%-15s|%-15s|\n", planes[i]->id, planes[i]->status, planes[i]->request_time, "-", "-");
+            reset();
+        }
+            
     }
     yellow();
     printf("---------------------------------------------------------------------------------\n");
@@ -660,6 +676,14 @@ void yellow() {
 
 void magenta() {
   printf("\033[0;35m");
+}
+
+void blue() {
+  printf("\033[0;34m");
+}
+
+void green() {
+  printf("\033[0;32m");
 }
 
 void reset() {
