@@ -91,14 +91,10 @@ pthread_t tower;
 /* creating threads attrs*/
 pthread_attr_t attr;
 
-/* mutexes and cond for tower */
-pthread_mutex_t tower_mutex;
-pthread_cond_t tower_cond;
 
 /* locks for queues */
 pthread_mutex_t landing_lock;
 pthread_mutex_t departing_lock;
-pthread_mutex_t emergency_lock;
 
 /* lock for all planes in the simulation. */
 pthread_mutex_t planes_array_lock;
@@ -157,16 +153,16 @@ void print_time(struct tm tm, int simulation);
 
 int main(int argc, char *argv[]) {
 
-    // if(!read_command_line(argc, argv, &p, &s, &n))
-    //     return 0;
+    if(!read_command_line(argc, argv, &p, &s, &n))
+        return 0;
 
     /* debug values */
-    s = 60;
-    p = 0.5;
-    n = 20;
+    // s = 10;
+    // p = 1;
+    // n = 2;
 
     /* set seed for debugging purposes. */
-    srand(1588004448);
+    srand(42);
 
     /* plane threads */
     /* Here, my assumption is there can be max 2*s+2 planes in the simulation
@@ -188,17 +184,12 @@ int main(int argc, char *argv[]) {
         planes_array[i] = plane_;
     }
     
-    /* initialization tower mutex and condition variable */
-    pthread_mutex_init(&tower_mutex, NULL);
-    pthread_cond_init(&tower_cond, NULL);
-
     /* initialization thread attr */
     pthread_attr_init(&attr);
 
     /* initialization queue mutexes */
     pthread_mutex_init(&landing_lock, NULL);
     pthread_mutex_init(&departing_lock, NULL);
-    pthread_mutex_init(&emergency_lock, NULL);
 
     /* initialization planes_array mutexes */
     pthread_mutex_init(&planes_array_lock, NULL);
@@ -309,7 +300,6 @@ int main(int argc, char *argv[]) {
             planes_data[planes_index]->plane_->respond_time = -1;
             planes_data[planes_index]->plane_->arrival_time = current_time;
             strcpy(planes_data[planes_index]->plane_->status, "D");
-            
             pthread_create(&planes[planes_index], &attr, depart, (void *) planes_data[planes_index]);
             
             planes_index++;
@@ -336,6 +326,8 @@ int main(int argc, char *argv[]) {
     /* wait for tower thread */
     pthread_join(tower, NULL);
     pthread_attr_destroy(&attr);
+
+    printf("Total Plane Count: %d\n", planes_index-1);
 
     /* kill all planes threads */
     for (int i=0; i<2*s+2; i++)
@@ -372,25 +364,11 @@ void* land(void *arg) {
     pthread_cond_init(&(landing_plane->cond), NULL);
 
     if (landing_plane->emergency)
-        enqueue(emergency, landing_plane, &emergency_lock);
+        enquenue_front(landing, landing_plane, &landing_lock);
     else
         enqueue(landing, landing_plane, &landing_lock);
 
-    if (landing_plane->id == 0)
-        pthread_cond_signal(&tower_cond);
-
     pthread_cond_wait(&(landing_plane->cond), &(landing_plane->lock));
-
-    /* get the tower lock */
-    pthread_mutex_lock(&tower_mutex);
-
-    pthread_sleep(2*t);
-    dequeue(landing, &landing_lock);
-    landing_plane->respond_time = ((int) time(NULL) - (int) start_time);
-
-    /* release the tower lock */
-    pthread_mutex_unlock(&tower_mutex);
-
     pthread_mutex_destroy(&(landing_plane->lock));
     pthread_cond_destroy(&(landing_plane->cond));
     pthread_exit(NULL);
@@ -406,19 +384,13 @@ void *depart(void *arg) {
 
     pthread_mutex_init(&(departing_plane->lock), NULL);
     pthread_cond_init(&(departing_plane->cond), NULL);
- 
+
+    pthread_mutex_lock(&(departing_plane->lock));
+    
     enqueue(departing, departing_plane, &departing_lock);
 
     pthread_cond_wait(&(departing_plane->cond), &(departing_plane->lock));
 
-    pthread_mutex_lock(&tower_mutex);
-
-    pthread_sleep(2*t);
-    dequeue(departing, &departing_lock);
-    departing_plane->respond_time = ((int) time(NULL) - (int) start_time);
-
-    pthread_mutex_unlock(&tower_mutex);
-    
     pthread_mutex_unlock(&(departing_plane->lock));
     pthread_mutex_destroy(&(departing_plane->lock));
     pthread_cond_destroy(&(departing_plane->cond));
@@ -431,31 +403,42 @@ void *airport_tower(void *arg) {
 
     tower_data *data_ = (tower_data *) arg;
 
-    pthread_cond_wait(&tower_cond, &tower_mutex);
-    pthread_mutex_unlock(&tower_mutex);
-
     time_t start_t = time(NULL);
     time_t current_t = time(NULL);
    
     while (current_t < (start_t + data_->s)) {
 
-        if (emergency->capacity > 0){
-            plane *emergency_plane = front(emergency, &emergency_lock);
-                    
-            pthread_cond_signal(&(emergency_plane->cond));
-            
-        }else{
+        if (front(landing, &landing_lock) != NULL) {
 
-            if (landing->capacity >= departing->capacity) {
+            if (landing->capacity > departing->capacity || front(landing, &landing_lock)->emergency) {
                 plane *landing_plane = front(landing, &landing_lock);
                         
+                dequeue(landing, &landing_lock);
+                pthread_sleep(2*t);
+                landing_plane->respond_time = ((int) time(NULL) - (int) start_time);
+
                 pthread_cond_signal(&(landing_plane->cond));
-                
+        
             }else if (departing->capacity > 0){
                 plane *departing_plane = front(departing, &departing_lock);
-    
-                pthread_cond_signal(&(departing_plane->cond));
 
+                dequeue(departing, &departing_lock);
+                pthread_sleep(2*t);
+                departing_plane->respond_time = ((int) time(NULL) - (int) start_time);
+
+                pthread_cond_signal(&(departing_plane->cond));
+            }
+        }else{
+
+            if (departing->capacity > 0){
+                plane *departing_plane = front(departing, &departing_lock);
+
+                dequeue(departing, &departing_lock);
+                pthread_sleep(2*t);
+                departing_plane->respond_time = ((int) time(NULL) - (int) start_time);
+
+                pthread_cond_signal(&(departing_plane->cond));
+            
             }
 
         }
@@ -682,6 +665,3 @@ void magenta() {
 void reset() {
   printf("\033[0m");
 }
-
-
-
