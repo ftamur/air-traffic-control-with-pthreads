@@ -105,7 +105,7 @@ pthread_mutex_t planes_array_lock;
 /* queue */
 
 /* display queue debugging purposes */
-void disqueue(queue *queue_, pthread_mutex_t *lock);
+void disqueue(queue *queue_, pthread_mutex_t *lock, FILE *fptr);
 
 /* remove item from queue */
 void dequeue(queue *queue_, pthread_mutex_t *lock);
@@ -134,6 +134,8 @@ void planes_log(plane **planes, int size, int time);
 
 void* airport_tower(void *arg);
 
+int starvation();
+
 /* utils */
 
 /* different text colors for terminal */
@@ -157,11 +159,6 @@ int main(int argc, char *argv[]) {
 
     if(!read_command_line(argc, argv, &p, &s, &n))
         return 0;
-
-    /* debug values */
-    // s = 10;
-    // p = 1;
-    // n = 2;
 
     /* set seed for debugging purposes. */
     srand(42);
@@ -261,6 +258,10 @@ int main(int argc, char *argv[]) {
     
     int simulation_time;
 
+    FILE *fptr;
+
+    fptr = fopen("log-min.txt", "a");
+
     while (current_time < start_time + s) {
         simulation_time = ((int) current_time -  (int) start_time);
 
@@ -308,7 +309,7 @@ int main(int argc, char *argv[]) {
         }
 
         red();
-        printf("--------------------------------------Time:%d-------------------------------------\n", ((int) current_time -  (int) start_time));
+        fprintf(fptr, "--------------------------------------Time:%d-------------------------------------\n", ((int) current_time -  (int) start_time));
         reset();
 
         pthread_sleep(t);
@@ -316,8 +317,8 @@ int main(int argc, char *argv[]) {
         simulation_time = ((int) current_time -  (int) start_time);
 
         /* display each air and ground queues */
-        disqueue(landing, &landing_lock);
-        disqueue(departing, &departing_lock);
+        disqueue(landing, &landing_lock, fptr);
+        disqueue(departing, &departing_lock, fptr);
 
         /* every nth second display log for all planes in the simulation. */
         if (simulation_time % n == 0 && simulation_time != 0)
@@ -328,8 +329,6 @@ int main(int argc, char *argv[]) {
     /* wait for tower thread */
     pthread_join(tower, NULL);
     pthread_attr_destroy(&attr);
-
-    printf("Total Plane Count: %d\n", planes_index-1);
 
     /* kill all planes threads */
     for (int i=0; i<2*s+2; i++)
@@ -343,6 +342,7 @@ int main(int argc, char *argv[]) {
     for (int i=0; i<2*s+2; i++) 
         free(planes_data[i]);
 
+    fclose(fptr);
     free(planes_data);
     free(data_tower);
     return 0;
@@ -410,41 +410,43 @@ void *airport_tower(void *arg) {
    
     while (current_t < (start_t + data_->s)) {
 
-        if (front(landing, &landing_lock) != NULL) {
-
-            if (landing->capacity > departing->capacity || front(landing, &landing_lock)->emergency) {
+        /* check for emergency. */
+        if (front(landing, &landing_lock) != NULL){
+            if (front(landing, &landing_lock)->emergency){
                 plane *landing_plane = front(landing, &landing_lock);
+
+                dequeue(landing, &landing_lock);
+                pthread_sleep(2*t);
+                landing_plane->respond_time = ((int) time(NULL) - (int) start_time);
+                
+                /* singal to waiting plane to continue and finish itself. */
+                pthread_cond_signal(&(landing_plane->cond));
+            }
+
+        }
+
+        /* no emergency then if depart->capacity > 5 and no starvation */
+        if (departing->capacity > 5 && !starvation()){
+                plane *departing_plane = front(departing, &departing_lock);
+
+                dequeue(departing, &departing_lock);
+                pthread_sleep(2*t);
+                departing_plane->respond_time = ((int) time(NULL) - (int) start_time);
+
+                /* singal to waiting plane to continue and finish itself. */
+                pthread_cond_signal(&(departing_plane->cond));
+
+        }else if (landing->capacity > 0){
+            plane *landing_plane = front(landing, &landing_lock);
                         
                 dequeue(landing, &landing_lock);
                 pthread_sleep(2*t);
                 landing_plane->respond_time = ((int) time(NULL) - (int) start_time);
 
-                pthread_cond_signal(&(landing_plane->cond));
-        
-            }else if (departing->capacity > 0){
-                plane *departing_plane = front(departing, &departing_lock);
-
-                dequeue(departing, &departing_lock);
-                pthread_sleep(2*t);
-                departing_plane->respond_time = ((int) time(NULL) - (int) start_time);
-
-                pthread_cond_signal(&(departing_plane->cond));
-            }
-        }else{
-
-            if (departing->capacity > 0){
-                plane *departing_plane = front(departing, &departing_lock);
-
-                dequeue(departing, &departing_lock);
-                pthread_sleep(2*t);
-                departing_plane->respond_time = ((int) time(NULL) - (int) start_time);
-
-                pthread_cond_signal(&(departing_plane->cond));
-            
-            }
-
+            /* singal to waiting plane to continue and finish itself. */
+            pthread_cond_signal(&(landing_plane->cond));
         }
-        
+    
         current_t = time(NULL);
         
     }
@@ -598,25 +600,26 @@ plane * front(queue *queue_, pthread_mutex_t *lock) {
 }
 
 /* display queue for debugging purposes */
-void disqueue(queue *queue_, pthread_mutex_t *lock) {
+void disqueue(queue *queue_, pthread_mutex_t *lock, FILE *fptr) {
 
     pthread_mutex_lock(lock);
 
     magenta();
 
     if (queue_->rear == -1){
-        printf("%-7s -\n", queue_->name);
+        fprintf(fptr, "%-7s -\n", queue_->name);
         pthread_mutex_unlock(lock);
         return;
     }
 
-    printf("%-7s ", queue_->name);
+    fprintf(fptr, "%-7s ", queue_->name);
     for (int i = queue_->front; i <= queue_->rear; i++)
-        printf("%d ", queue_->items[i]->id);
+        fprintf(fptr, "%d ", queue_->items[i]->id);
 
-    printf("\n");
+    fprintf(fptr, "\n");
 
     reset();
+
     pthread_mutex_unlock(lock);
 
 }
@@ -625,13 +628,17 @@ void planes_log(plane *planes[], int size, int time) {
 
     pthread_mutex_lock(&planes_array_lock);
 
+    FILE *fptr;
+
+    fptr = fopen("planes_log.txt", "a");
+
     yellow();
 
-    printf("---------------------------------------------------------------------------------\n");
-    printf("--------------------------------------Time:%d-------------------------------------\n", time);
-    printf("|%-15s|%-15s|%-15s|%-15s|%-15s|\n", "PlaneID", "Status", "Request-Time",
+    fprintf(fptr, "---------------------------------------------------------------------------------\n");
+    fprintf(fptr, "--------------------------------------Time:%d-------------------------------------\n", time);
+    fprintf(fptr, "|%-15s|%-15s|%-15s|%-15s|%-15s|\n", "PlaneID", "Status", "Request-Time",
     "Runway-Time", "Turnaround-Time");
-    printf("---------------------------------------------------------------------------------\n");
+    fprintf(fptr, "---------------------------------------------------------------------------------\n");
     int i;
     for (i=0; i < size; i++){
         if (planes[i]->respond_time != -1){
@@ -643,24 +650,56 @@ void planes_log(plane *planes[], int size, int time) {
             else
                 red();
 
-            printf("|%-15d|%-15s|%-15d|%-15d|%-15d|\n", planes[i]->id, planes[i]->status, planes[i]->request_time, planes[i]->respond_time, planes[i]->respond_time - planes[i]->request_time);
+            fprintf(fptr, "|%-15d|%-15s|%-15d|%-15d|%-15d|\n", planes[i]->id, planes[i]->status, planes[i]->request_time, planes[i]->respond_time, planes[i]->respond_time - planes[i]->request_time);
 
             reset();
 
         }else{
             magenta();
-            printf("|%-15d|%-15s|%-15d|%-15s|%-15s|\n", planes[i]->id, planes[i]->status, planes[i]->request_time, "-", "-");
+            fprintf(fptr, "|%-15d|%-15s|%-15d|%-15s|%-15s|\n", planes[i]->id, planes[i]->status, planes[i]->request_time, "-", "-");
             reset();
         }
             
     }
     yellow();
-    printf("---------------------------------------------------------------------------------\n");
+    fprintf(fptr, "---------------------------------------------------------------------------------\n\n");
     reset();
 
+    fclose(fptr);
     pthread_mutex_unlock(&planes_array_lock);
 
 }
+
+/* checks whether starvation in the landing queue */
+int starvation() {
+
+    pthread_mutex_lock(&landing_lock);
+
+    if (landing->capacity == 0){
+        pthread_mutex_unlock(&landing_lock);
+        return 0;
+    }
+
+    pthread_mutex_unlock(&landing_lock);
+
+    int current_time = (int) time(NULL) - (int) start_time;
+
+    plane *front_land = front(landing, &landing_lock);
+    plane *front_depart = front(departing, &departing_lock);
+
+    if (front_land->request_time - front_depart->request_time >= 4)
+        return 0;
+
+    /*  give proirity to landing turnaround < 6 for landing planes
+        cause starvation for the departing planes.
+    if (current_time - front_land->request_time >= 6)
+        return 1;
+     */
+
+    return 1;
+
+}
+
 
 void print_time(struct tm tm, int simulation) {
     printf("Time: %02d:%02d:%02d - %d seconds in simulation\n", tm.tm_hour, tm.tm_min, tm.tm_sec, simulation);
