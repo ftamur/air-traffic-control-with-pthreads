@@ -12,7 +12,9 @@ s: simulation time
 
 n: every nth seconds log all planes in the simulation.
 
-./run -p 0.5 -s 60 -n 20
+./run -p 0.5 -s 60 -n 60 prints logs to terminal.
+
+./run -p 0.5 -s 60 -n 60 -f generates txt log files.
 
 Terminal Output:
 
